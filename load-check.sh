@@ -23,6 +23,7 @@ if [[ "$1" == "--output" && -n "$2" ]]; then
 fi
 
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+HOSTNAME_VAL=$(hostname)
 
 # ---------- Root check ----------
 if [[ $EUID -ne 0 ]]; then
@@ -44,7 +45,7 @@ sum_info() { echo -e "     $1"; }
 rpt "================================================================"
 rpt "  SERVER LOAD INVESTIGATION REPORT"
 rpt "  Generated : $TIMESTAMP"
-rpt "  Host      : $(hostname)"
+rpt "  Host      : $HOSTNAME_VAL"
 rpt "================================================================"
 
 # ---------- Progress indicator ----------
@@ -63,6 +64,7 @@ LOAD1=$(echo "$LOAD_RAW"  | awk -F'load average:' '{print $2}' | cut -d',' -f1 |
 LOAD5=$(echo "$LOAD_RAW"  | awk -F'load average:' '{print $2}' | cut -d',' -f2 | tr -d ' ')
 LOAD15=$(echo "$LOAD_RAW" | awk -F'load average:' '{print $2}' | cut -d',' -f3 | tr -d ' ')
 LOAD_INT=$(echo "$LOAD1" | cut -d'.' -f1)
+LOAD_INT=${LOAD_INT:-0}
 UPTIME_SINCE=$(uptime -s 2>/dev/null || echo "N/A")
 
 rpt ""
@@ -150,6 +152,11 @@ show_progress "Apache connections"
 APACHE_PROC=$(ps aux | grep -E 'httpd|apache2' | grep -v grep | wc -l)
 HTTP_CONN=$(ss -tn 2>/dev/null | grep -c ':80 ' || echo 0)
 HTTPS_CONN=$(ss -tn 2>/dev/null | grep -c ':443 ' || echo 0)
+# Sanitize to plain integers
+HTTP_CONN=$(echo "$HTTP_CONN" | grep -oP '^\d+' || echo 0)
+HTTPS_CONN=$(echo "$HTTPS_CONN" | grep -oP '^\d+' || echo 0)
+HTTP_CONN=${HTTP_CONN:-0}
+HTTPS_CONN=${HTTPS_CONN:-0}
 TOTAL_CONN=$((HTTP_CONN + HTTPS_CONN))
 
 rpt ""
@@ -200,8 +207,9 @@ else
     rpt "MySQL not accessible or mysqladmin not found."
 fi
 
-# Extract slow query count for summary
+# Extract slow query count for summary — strip to plain integer safely
 SLOW_Q_COUNT=$(echo "$MYSQL_SLOW" | awk '{print $2}' | tr -d '[:space:]')
+SLOW_Q_COUNT=${SLOW_Q_COUNT:-0}
 
 # ---- 8. Cron jobs ----
 show_progress "cron jobs"
@@ -212,6 +220,7 @@ if [[ -d /var/spool/cron ]]; then
         [[ -f "$cronfile" ]] || continue
         CRON_USER=$(basename "$cronfile")
         CRON_LINES=$(grep -v '^#' "$cronfile" 2>/dev/null | grep -v '^$' | wc -l)
+        CRON_LINES=${CRON_LINES:-0}
         if (( CRON_LINES > 0 )); then
             CRON_USER_LIST+="  User: $CRON_USER ($CRON_LINES active jobs)\n"
             CRON_USER_LIST+="$(grep -v '^#' "$cronfile" 2>/dev/null | grep -v '^$' | sed 's/^/    /')\n"
@@ -235,6 +244,8 @@ QUEUE_COUNT=0
 QUEUE_TOP_SENDERS=""
 if command -v exim &>/dev/null; then
     QUEUE_COUNT=$(exim -bpc 2>/dev/null || echo 0)
+    QUEUE_COUNT=$(echo "$QUEUE_COUNT" | grep -oP '^\d+' || echo 0)
+    QUEUE_COUNT=${QUEUE_COUNT:-0}
     if (( QUEUE_COUNT > 100 )); then
         QUEUE_TOP_SENDERS=$(exim -bp 2>/dev/null | grep '<' | \
             awk '{print $4}' | sort | uniq -c | sort -rn | head -10)
@@ -294,9 +305,12 @@ show_progress "memory & swap"
 MEM_FREE=$(free -h)
 MEM_TOTAL=$(free | grep Mem | awk '{print $2}')
 MEM_USED=$(free  | grep Mem | awk '{print $3}')
+MEM_TOTAL=${MEM_TOTAL:-1}
 MEM_PCT=$(( MEM_USED * 100 / MEM_TOTAL ))
 SWAP_TOTAL=$(free | grep Swap | awk '{print $2}')
 SWAP_USED=$(free  | grep Swap | awk '{print $3}')
+SWAP_TOTAL=${SWAP_TOTAL:-0}
+SWAP_USED=${SWAP_USED:-0}
 SWAP_PCT=0
 if (( SWAP_TOTAL > 0 )); then
     SWAP_PCT=$(( SWAP_USED * 100 / SWAP_TOTAL ))
@@ -337,11 +351,15 @@ if [[ -f "$APACHE_LOG" ]]; then
     APACHE_ERRORS=$(tail -30 "$APACHE_LOG" 2>/dev/null)
 fi
 
+# FIX: grep -c can return "0\n0\n0" across multiple files in a subshell.
+# We read line-by-line and sanitize ERR_LINES to a plain integer before (( )).
 PHP_ERROR_SUMMARY=""
 while IFS= read -r errfile; do
-    ERR_LINES=$(grep -c 'PHP Fatal\|PHP Parse\|PHP Warning' "$errfile" 2>/dev/null || echo 0)
-    ERR_LINES=$(echo "$ERR_LINES" | tr -d '[:space:]' | grep -oP '^\d+' || echo 0)
-    if [[ "$ERR_LINES" =~ ^[0-9]+$ ]] && (( ERR_LINES > 0 )); then
+    ERR_LINES=$(grep -c 'PHP Fatal\|PHP Parse\|PHP Warning' "$errfile" 2>/dev/null)
+    # Strip everything except digits; default to 0 if empty
+    ERR_LINES="${ERR_LINES//[^0-9]/}"
+    ERR_LINES="${ERR_LINES:-0}"
+    if (( ERR_LINES > 0 )); then
         OWNER=$(stat -c '%U' "$errfile")
         PHP_ERROR_SUMMARY+="  [User: $OWNER] $errfile — $ERR_LINES error lines\n"
         PHP_ERROR_SUMMARY+="$(grep -E 'PHP Fatal|PHP Parse' "$errfile" 2>/dev/null | tail -3 | sed 's/^/    /')\n"
@@ -364,6 +382,7 @@ CSF_COUNT=0
 CSF_BLOCKED=""
 if command -v csf &>/dev/null; then
     CSF_COUNT=$(csf -l 2>/dev/null | wc -l)
+    CSF_COUNT=${CSF_COUNT:-0}
     CSF_BLOCKED=$(csf -l 2>/dev/null | tail -15)
 fi
 
@@ -385,13 +404,13 @@ rpt ""
 rpt "================================================================"
 rpt "  16. RECOMMENDATIONS"
 rpt "================================================================"
-rpt "  1. High PHP procs    → Limit PHP-FPM pool size per user in WHM"
-rpt "  2. MySQL slow        → Run: pt-query-digest /var/lib/mysql/slow.log"
-rpt "  3. Mail queue flood  → Run: exim -bp | exiqsumm"
-rpt "  4. WordPress abuse   → Disable wp-cron.php, use system cron instead"
-rpt "  5. DDoS/brute force  → Block IPs via CSF: csf -d <IP>"
-rpt "  6. Disk I/O high     → Check with: iotop -ao"
-rpt "  7. Memory pressure   → Tune Apache MaxRequestWorkers in WHM"
+rpt "  1. High PHP procs    -> Limit PHP-FPM pool size per user in WHM"
+rpt "  2. MySQL slow        -> Run: pt-query-digest /var/lib/mysql/slow.log"
+rpt "  3. Mail queue flood  -> Run: exim -bp | exiqsumm"
+rpt "  4. WordPress abuse   -> Disable wp-cron.php, use system cron instead"
+rpt "  5. DDoS/brute force  -> Block IPs via CSF: csf -d <IP>"
+rpt "  6. Disk I/O high     -> Check with: iotop -ao"
+rpt "  7. Memory pressure   -> Tune Apache MaxRequestWorkers in WHM"
 rpt ""
 rpt "================================================================"
 rpt "  END OF REPORT — $TIMESTAMP"
@@ -404,26 +423,30 @@ clear_progress
 echo ""
 echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}${BOLD}║         SERVER LOAD INVESTIGATION — SUMMARY                 ║${NC}"
-_HOST=$(hostname | cut -c1-30); _PAD=$((30 - ${#_HOST})); echo -e "${CYAN}${BOLD}║         Host: ${_HOST}$(printf '%*s' $_PAD '')         ║${NC}"
-echo -e "${CYAN}${BOLD}║         $TIMESTAMP                        ║${NC}"
+# FIX: pre-compute hostname length — bash does not support ${#$(cmd)} inline
+_HOST="${HOSTNAME_VAL:0:30}"
+_HLEN=${#_HOST}
+_PAD=$(( 30 - _HLEN ))
+echo -e "${CYAN}${BOLD}║         Host: ${_HOST}$(printf '%*s' $_PAD '')         ║${NC}"
+echo -e "${CYAN}${BOLD}║         ${TIMESTAMP}                       ║${NC}"
 echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
 # Load
 echo -e "${BOLD}  LOAD & CPU${NC}"
 if (( LOAD_INT > CORES )); then
-    sum_alert "Load ${LOAD1} / ${LOAD5} / ${LOAD15}  ←  OVERLOADED! ($CORES cores)"
+    sum_alert "Load ${LOAD1} / ${LOAD5} / ${LOAD15}  <-  OVERLOADED! ($CORES cores)"
 elif (( LOAD_INT > CORES / 2 )); then
-    sum_warn  "Load ${LOAD1} / ${LOAD5} / ${LOAD15}  ←  Elevated ($CORES cores)"
+    sum_warn  "Load ${LOAD1} / ${LOAD5} / ${LOAD15}  <-  Elevated ($CORES cores)"
 else
-    sum_ok    "Load ${LOAD1} / ${LOAD5} / ${LOAD15}  ←  Normal ($CORES cores)"
+    sum_ok    "Load ${LOAD1} / ${LOAD5} / ${LOAD15}  <-  Normal ($CORES cores)"
 fi
 
 # Top user
 echo ""
 echo -e "${BOLD}  TOP RESOURCE USER${NC}"
 if [[ -n "$TOP_USER" ]]; then
-    sum_info "${BOLD}${TOP_USER}${NC}  →  CPU: ${TOP_USER_CPU}%   MEM: ${TOP_USER_MEM}%"
+    sum_info "${BOLD}${TOP_USER}${NC}  ->  CPU: ${TOP_USER_CPU}%   MEM: ${TOP_USER_MEM}%"
 fi
 
 # PHP
@@ -470,7 +493,7 @@ sum_info "Worker processes: $APACHE_PROC"
 echo ""
 echo -e "${BOLD}  MYSQL${NC}"
 if [[ -n "$MYSQL_STATUS" ]]; then
-    if [[ -n "$SLOW_Q_COUNT" ]] && (( SLOW_Q_COUNT > 100 )); then
+    if [[ "$SLOW_Q_COUNT" =~ ^[0-9]+$ ]] && (( SLOW_Q_COUNT > 100 )); then
         sum_warn "Slow queries since restart: $SLOW_Q_COUNT"
     else
         sum_ok   "Reachable. Slow queries: ${SLOW_Q_COUNT:-N/A}"
