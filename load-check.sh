@@ -340,7 +340,8 @@ fi
 PHP_ERROR_SUMMARY=""
 while IFS= read -r errfile; do
     ERR_LINES=$(grep -c 'PHP Fatal\|PHP Parse\|PHP Warning' "$errfile" 2>/dev/null || echo 0)
-    if (( ERR_LINES > 0 )); then
+    ERR_LINES=$(echo "$ERR_LINES" | tr -d '[:space:]' | grep -oP '^\d+' || echo 0)
+    if [[ "$ERR_LINES" =~ ^[0-9]+$ ]] && (( ERR_LINES > 0 )); then
         OWNER=$(stat -c '%U' "$errfile")
         PHP_ERROR_SUMMARY+="  [User: $OWNER] $errfile — $ERR_LINES error lines\n"
         PHP_ERROR_SUMMARY+="$(grep -E 'PHP Fatal|PHP Parse' "$errfile" 2>/dev/null | tail -3 | sed 's/^/    /')\n"
@@ -403,7 +404,7 @@ clear_progress
 echo ""
 echo -e "${CYAN}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
 echo -e "${CYAN}${BOLD}║         SERVER LOAD INVESTIGATION — SUMMARY                 ║${NC}"
-echo -e "${CYAN}${BOLD}║         Host: $(hostname | cut -c1-30)$(printf '%*s' $((30 - ${#$(hostname)})) '')         ║${NC}"
+_HOST=$(hostname | cut -c1-30); _PAD=$((30 - ${#_HOST})); echo -e "${CYAN}${BOLD}║         Host: ${_HOST}$(printf '%*s' $_PAD '')         ║${NC}"
 echo -e "${CYAN}${BOLD}║         $TIMESTAMP                        ║${NC}"
 echo -e "${CYAN}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
